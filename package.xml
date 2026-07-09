@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>wasrt_ros</name>
+  <version>0.2.0</version>
+  <description>Self-contained ROS Noetic node for WaSR-T (ResNet-101) maritime semantic segmentation.</description>
+  <maintainer email="vid.rijavec@fri.uni-lj.si">Vid Rijavec</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>rospy</depend>
+  <depend>sensor_msgs</depend>
+  <depend>cv_bridge</depend>
+</package>

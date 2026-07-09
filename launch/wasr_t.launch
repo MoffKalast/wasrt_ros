@@ -1,0 +1,22 @@
+<launch>
+  <!-- Path to the downloaded WaSR-T ResNet-101 .pth weights (required). -->
+  <arg name="weights" default="/home/vid/wasrt/wasrt_mastr1478.pth"/>
+  <arg name="image_topic" default="/mast_cam/cropped/compressed"/>
+  <arg name="output_topic" default="/mast_cam/wasr_seg"/>
+  <arg name="publish_color" default="true"/>
+
+  <node name="wasrt_node" pkg="wasrt_ros" type="wasrt_node.py" output="screen">
+    <param name="weights" value="$(arg weights)"/>
+    <param name="image_topic" value="$(arg image_topic)"/>
+    <param name="output_topic" value="$(arg output_topic)"/>
+    <param name="publish_color" value="$(arg publish_color)"/>
+  </node>
+
+  <node name="wasrt_camera_preprocessor" pkg="wasrt_ros" type="camera_preprocesor.py" output="screen">
+    <param name="downsample" value="0.25"/>
+    <param name="crop_top" value="0.1"/>
+    <param name="crop_bottom" value="0.32"/>
+    <param name="divisor" value="32"/>
+  </node>
+
+</launch>
