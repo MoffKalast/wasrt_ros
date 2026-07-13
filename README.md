@@ -1,7 +1,9 @@
 # wasrt_ros
 
 A self-contained ROS One (one) package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
-(ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT.
+(ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT for the purpose of verifying and filtering unreliable laserscan points.
+
+![banner](misc/img.jpg)
 
 ## Nodes
 
@@ -27,6 +29,20 @@ Both share the same interface:
 | `~preview_topic` | `/wasrt/image_preview/compressed` | Human-visible preview: input image blended with the colored segmentation, as `CompressedImage`. |
 | `~publish_preview` | `false` | Enable the preview publisher. |
 | `~weights` (torch) / `~engine` (TensorRT) | — | Path to the `.pth` weights / `.engine` file. |
+
+#### `lidar_verifyer_node.py`
+Cross-checks a 2D lidar scan against the segmentation: each scan point is projected into the camera image and sampled from `/wasrt/image_seg`. Only points that land on an obstacle pixel (class 0) are kept; everything else — points on water/sky, outside the camera's field of view, or behind the camera — is set to NaN, since it cannot be verified. Requires the lidar -> camera tf and the preprocessor's `camera_info`.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `~scan_topic` | `/scan_filtered` | Input `LaserScan`, synchronized with the segmentation. |
+| `~scan_out_topic` | `/scan_verified` | Filtered `LaserScan` output. |
+| `~seg_topic` | `/wasrt/image_seg` | Segmentation input. |
+| `~camera_info_topic` | `/camera/image_cropped/camera_info` | Intrinsics used for projection. |
+| `~publish_preview` | `false` | Also sync `/wasrt/image_preview/compressed` and publish it with projected scan points drawn on top (green = verified, red = rejected) to `/wasrt/scan_preview/compressed`. Useful for checking that tf and camera_info are correct. |
+| `~static_tf` | `true` | Look up the lidar -> camera transform once and cache it. Set to `false` if the transform can change at runtime. |
+| `~obstacle_class` | `0` | Class id treated as a valid obstacle. |
+
 
 ## Installation
 

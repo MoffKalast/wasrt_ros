@@ -3,6 +3,8 @@
   <arg name="engine" default="~/wasrt_320x96_fp16.engine"/>
   <arg name="camera_topic" default="/camera/image_rect/compressed"/>
   <arg name="image_topic" default="/camera/image_cropped"/>
+  <arg name="scan_topic" default="/scan_filtered"/>
+  <arg name="scan_out_topic" default="/scan_verified"/>
   <arg name="publish_preview" default="false"/>
 
   <node name="wasrt_node" pkg="wasrt_ros" type="wasrt_onnx_node.py" output="screen">
@@ -19,6 +21,13 @@
     <param name="crop_top" value="0.1"/>
     <param name="crop_bottom" value="0.32"/>
     <param name="divisor" value="32"/>
+  </node>
+
+  <node name="wasrt_lidar_verifyer_node" pkg="wasrt_ros" type="lidar_verifyer_node.py" output="screen">
+    <param name="scan_topic" value="$(arg scan_topic)"/>
+    <param name="scan_out_topic" value="$(arg scan_out_topic)"/>
+    <param name="camera_info_topic" value="$(arg image_topic)/camera_info"/>
+    <param name="publish_preview" value="$(arg publish_preview)"/>
   </node>
 
 </launch>
