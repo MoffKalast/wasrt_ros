@@ -1,20 +1,24 @@
 <launch>
-  <!-- Path to the downloaded WaSR-T ResNet-101 .pth weights (required). -->
-  <arg name="engine" default="/home/vid/wasrt/wasrt_320x96_fp16.engine"/>
-  <arg name="image_topic" default="/mast_cam/cropped/compressed"/>
-  <arg name="output_topic" default="/mast_cam/wasr_seg"/>
+  <!-- Path to the compiled TensorRT engine (required). -->
+  <arg name="engine" default="~/wasrt_320x96_fp16.engine"/>
+  <arg name="camera_topic" default="/camera/image_rect/compressed"/>
+  <arg name="image_topic" default="/camera/image_cropped"/>
+  <arg name="publish_preview" default="false"/>
 
   <node name="wasrt_node" pkg="wasrt_ros" type="wasrt_onnx_node.py" output="screen">
     <param name="engine" value="$(arg engine)"/>
     <param name="image_topic" value="$(arg image_topic)"/>
-    <param name="output_topic" value="$(arg output_topic)"/>
+    <param name="publish_preview" value="$(arg publish_preview)"/>
   </node>
 
   <node name="wasrt_camera_preprocessor" pkg="wasrt_ros" type="camera_preprocesor.py" output="screen">
+    <param name="camera_topic" value="$(arg camera_topic)"/>
+    <param name="output_topic" value="$(arg image_topic)"/>
+    <param name="publish_preview" value="$(arg publish_preview)"/>
     <param name="downsample" value="0.25"/>
     <param name="crop_top" value="0.1"/>
     <param name="crop_bottom" value="0.32"/>
     <param name="divisor" value="32"/>
   </node>
-  
+
 </launch>

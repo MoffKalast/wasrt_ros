@@ -2,8 +2,16 @@ import onnx
 import tensorrt as trt
 from onnxconverter_common import float16
 
-onnx_fp16_path = "wasrt_320x96_fp16.onnx"
-engine_output_path = "wasrt_320x96_fp16.engine"
+from pathlib import Path
+import argparse
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--in_path", type=Path, default="~/wasrt_320x96_fp16.onnx", help="Input ONNX model")
+ap.add_argument("--out_path", type=Path, default="~/wasrt_320x96_fp16.engine", help="Output TensorRT engine")
+args = ap.parse_args()
+
+onnx_fp16_path = args.in_path.expanduser()
+engine_output_path = args.out_path.expanduser()
 
 logger = trt.Logger(trt.Logger.INFO)
 builder = trt.Builder(logger)

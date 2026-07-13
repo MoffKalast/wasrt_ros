@@ -8,7 +8,7 @@ import tensorrt as trt
 import torch
 import torch.nn.functional as F
 
-from sensor_msgs.msg import CompressedImage
+from sensor_msgs.msg import CompressedImage, Image
 from cv_bridge import CvBridge
 
 # Fixed by the published WaSR-T ResNet-101 weights: 3 classes (0 obstacle, 1 water, 2 sky), context length 5.
@@ -25,8 +25,10 @@ class WasrTNode:
 		rospy.init_node('wasr_t_node')
 
 		engine_path = rospy.get_param('~engine', '')
-		self.image_topic = rospy.get_param('~image_topic', '/mast_cam/compressed')
-		self.out_topic = rospy.get_param('~output_topic', '/mast_cam/wasr_seg')
+		self.image_topic = rospy.get_param('~image_topic', '/camera/image_cropped')
+		seg_topic = rospy.get_param('~seg_topic', '/wasrt/image_seg')
+		preview_topic = rospy.get_param('~preview_topic', '/wasrt/image_preview/compressed')
+		self.publish_preview = bool(rospy.get_param('~publish_preview', False))
 
 		self.device = torch.device('cuda')
 		self.dtype = torch.float16
@@ -65,7 +67,8 @@ class WasrTNode:
 			self.context.set_tensor_address(name, tensor.data_ptr())
 
 		self.bridge = CvBridge()
-		self.pub = rospy.Publisher(self.out_topic, CompressedImage, queue_size=1)
+		self.pub_seg = rospy.Publisher(seg_topic, Image, queue_size=1)
+		self.pub_preview = rospy.Publisher(preview_topic, CompressedImage, queue_size=1) if self.publish_preview else None
 
 		self._warmup()
 		rospy.loginfo('WaSR-T ready: size=%dx%d', SIZE[0], SIZE[1])
@@ -99,23 +102,30 @@ class WasrTNode:
 		return logits.argmax(1).squeeze(0).to(torch.uint8).cpu().numpy()
 
 	def publish(self, labels, bgr, header):
-		resized = cv2.resize(bgr, SIZE, interpolation=cv2.INTER_LINEAR)
-		# SEGMENTATION_COLORS is RGB; convert to BGR so the jpg encode below writes correct channels.
-		mask = cv2.cvtColor(SEGMENTATION_COLORS[labels], cv2.COLOR_RGB2BGR)
-		overlay = cv2.addWeighted(mask, 0.6, resized, 0.4, 0.0)
+		# labels are at network resolution; bring them back to the input frame size (nearest keeps class ids intact)
+		if labels.shape[0] != bgr.shape[0] or labels.shape[1] != bgr.shape[1]:
+			labels = cv2.resize(labels, (bgr.shape[1], bgr.shape[0]), interpolation=cv2.INTER_NEAREST)
 
-		msg = self.bridge.cv2_to_compressed_imgmsg(overlay)
-		msg.header = header
-		self.pub.publish(msg)
+		seg_msg = self.bridge.cv2_to_imgmsg(labels, encoding='mono8')
+		seg_msg.header = header
+		self.pub_seg.publish(seg_msg)
+
+		if self.pub_preview is not None:
+			# SEGMENTATION_COLORS is RGB; convert to BGR so the jpg encode below writes correct channels.
+			mask = cv2.cvtColor(SEGMENTATION_COLORS[labels], cv2.COLOR_RGB2BGR)
+			overlay = cv2.addWeighted(bgr, 0.5, mask, 0.5, 0.0)
+			msg = self.bridge.cv2_to_compressed_imgmsg(overlay, dst_format='jpg')
+			msg.header = header
+			self.pub_preview.publish(msg)
 
 	def run(self):
 		while not rospy.is_shutdown():
 			try:
-				msg = rospy.wait_for_message(self.image_topic, CompressedImage, timeout=1.0)
+				msg = rospy.wait_for_message(self.image_topic, Image, timeout=1.0)
 			except rospy.ROSException:
 				continue
 
-			bgr = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+			bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 			if bgr is None:
 				continue
 

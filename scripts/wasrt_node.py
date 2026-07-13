@@ -157,9 +157,10 @@ class WasrTNode:
 	def __init__(self):
 		rospy.init_node('wasr_t_node')
 		weights = rospy.get_param('~weights')
-		self.image_topic = rospy.get_param('~image_topic', '/mast_cam/compressed')
-		out_topic = rospy.get_param('~output_topic', '/mast_cam/wasr_seg')
-		self.publish_color = bool(rospy.get_param('~publish_color', True))
+		self.image_topic = rospy.get_param('~image_topic', '/camera/image_cropped')
+		seg_topic = rospy.get_param('~seg_topic', '/wasrt/image_seg')
+		preview_topic = rospy.get_param('~preview_topic', '/wasrt/image_preview/compressed')
+		self.publish_preview = bool(rospy.get_param('~publish_preview', False))
 
 		# Input size is fixed, so let cuDNN pick the fastest conv algorithm (notably for the dilated layers).
 		torch.backends.cudnn.benchmark = True
@@ -176,8 +177,8 @@ class WasrTNode:
 		self.std = torch.tensor(IMAGENET_STD, device=self.device, dtype=self.dtype).view(1, 3, 1, 1)
 
 		self.bridge = CvBridge()
-		self.pub_seg = rospy.Publisher(out_topic, Image, queue_size=1)
-		self.pub_color = rospy.Publisher(out_topic + '/color', CompressedImage, queue_size=1) if self.publish_color else None
+		self.pub_seg = rospy.Publisher(seg_topic, Image, queue_size=1)
+		self.pub_preview = rospy.Publisher(preview_topic, CompressedImage, queue_size=1) if self.publish_preview else None
 
 		self._warmup()
 		rospy.loginfo('WaSR-T ready: size=%dx%d', SIZE[0], SIZE[1])
@@ -206,7 +207,7 @@ class WasrTNode:
 		seg_msg.header = header
 		self.pub_seg.publish(seg_msg)
 
-		if self.pub_color is not None:
+		if self.pub_preview is not None:
 			color_bgr = cv2.cvtColor(SEGMENTATION_COLORS[labels], cv2.COLOR_RGB2BGR)
 			overlay = cv2.addWeighted(original_bgr, 0.5, color_bgr, 0.5, 0.0)
 			ok, jpg = cv2.imencode(".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, 80])
@@ -215,15 +216,15 @@ class WasrTNode:
 				msg.header = header
 				msg.format = "jpeg"
 				msg.data = jpg.tobytes()
-				self.pub_color.publish(msg)
+				self.pub_preview.publish(msg)
 
 	def run(self):
 		while not rospy.is_shutdown():
 			try:
-				msg = rospy.wait_for_message(self.image_topic, CompressedImage, timeout=1.0)
+				msg = rospy.wait_for_message(self.image_topic, Image, timeout=1.0)
 			except rospy.ROSException:
 				continue
-			bgr = cv2.imdecode(np.frombuffer(msg.data, np.uint8), cv2.IMREAD_COLOR)
+			bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 			if bgr is None:
 				continue
 			if bgr.shape[1] != SIZE[0] or bgr.shape[0] != SIZE[1]:

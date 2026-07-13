@@ -1,4 +1,106 @@
 # wasrt_ros
 
-A self-contained ROS One node that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
-(ResNet-101) maritime semantic segmentation on a live camera stream with either pytorch or TensorRT.
+A self-contained ROS One (one) package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
+(ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT.
+
+## Nodes
+
+#### `camera_preprocesor.py`
+Downsamples and crops the camera stream to a network-friendly resolution (divisible by 32) and rescales the camera intrinsics to match.
+
+| Parameter | Default | Description |
+|---|---|---|
+| `~camera_topic` | `/camera/image_rect/compressed` | Input image topic. If it ends with `compressed` the node subscribes as `CompressedImage`, otherwise as `Image` (`/camera/image_rect`). The matching `CameraInfo` is read from `<base_topic>/camera_info`. |
+| `~output_topic` | `/camera/image_cropped` | Cropped output, published as `Image`. Adjusted intrinsics go to `<output_topic>/camera_info`. |
+| `~publish_preview` | `false` | Also publish the cropped image as `CompressedImage` on `<output_topic>/compressed`. |
+| `~downsample` | `0.25` | Scale factor applied before cropping. |
+| `~crop_top` / `~crop_bottom` | `0.1` / `0.32` | Fraction of the (scaled) image height cut from the top/bottom. |
+| `~divisor` | `32` | Output dimensions are trimmed to a multiple of this. |
+
+#### `wasrt_node.py` (PyTorch) and `wasrt_onnx_node.py` (TensorRT)
+Both share the same interface:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `~image_topic` | `/camera/image_cropped` | Input `Image` topic (the preprocessor output). |
+| `~seg_topic` | `/wasrt/image_seg` | Raw segmentation result as a `mono8` `Image` with per-pixel class ids (0 obstacle, 1 water, 2 sky). |
+| `~preview_topic` | `/wasrt/image_preview/compressed` | Human-visible preview: input image blended with the colored segmentation, as `CompressedImage`. |
+| `~publish_preview` | `false` | Enable the preview publisher. |
+| `~weights` (torch) / `~engine` (TensorRT) | — | Path to the `.pth` weights / `.engine` file. |
+
+## Installation
+
+Tested on Ubuntu 22.04 + ROS One with an RTX 4060.
+
+Install ROS dependencies:
+
+```bash
+sudo apt install ros-one-cv-bridge ros-one-sensor-msgs python3-opencv
+```
+
+Install Python dependencies for the PyTorch node (a CUDA-enabled torch build is required; see https://pytorch.org for the wheel matching your CUDA version):
+
+```bash
+pip3 install torch torchvision numpy
+```
+
+Download the pretrained WaSR-T weights (trained on MaSTr1478):
+
+```bash
+wget -O ~/wasrt_mastr1478.pth https://github.com/lojzezust/WaSR-T/releases/download/weights/wasrt_mastr1478.pth
+```
+
+## Building the package
+
+Clone into a catkin workspace and build:
+
+```bash
+cd ~/catkin_ws/src
+git clone https://github.com/MoffKalast/wasrt_ros.git
+cd ..
+catkin_make
+```
+
+## Running the PyTorch node
+
+```bash
+roslaunch wasrt_ros wasr_t.launch weights:=~/wasrt_mastr1478.pth camera_topic:=/camera/image_rect/compressed publish_preview:=true
+```
+
+This starts the camera preprocessor and the PyTorch inference node. The segmentation is published on `/wasrt/image_seg` and, with `publish_preview:=true`, an overlay preview on `/wasrt/image_preview/compressed` which you can inspect with `rqt_image_view`.
+
+Note: the model input resolution is fixed by the SIZE constant in `scripts/wasrt_node.py` (default 320x96). The preprocessor's `downsample`/crop parameters in the launch file must produce exactly this resolution for your camera, otherwise frames are skipped with a warning, the current setup assumes a 1280x720 input. Check the actual output size with `rostopic echo -n1 /camera/image_cropped | head` and adjust either side.
+
+## Exporting to ONNX
+
+The temporal context module keeps a rolling feature history, so the ONNX export uses an explicit `mem_in`/`mem_out` state tensor instead of internal state. The export resolution is fixed at trace time: edit the SIZE constant at the top of `misc/export_onnx.py` to match the resolution your preprocessor produces (width, height; both divisible by 32), then:
+
+```bash
+pip3 install onnx onnxruntime-gpu onnxconverter-common
+python3 misc/export_onnx.py --weights ~/wasrt_mastr1478.pth --out ~/wasrt_320x96_fp16.onnx --fp16
+```
+
+The script exports the model, validates it with `onnx.checker`, and cross-checks the ONNX Runtime output against PyTorch (the reported max logits diff should be small, e.g. < 1e-2 for fp16). Add `--bench 100` to benchmark ONNX Runtime inference.
+
+## Building the TensorRT engine
+
+TensorRT engines are specific to the GPU and TensorRT version, so build the engine on the machine that will run inference:
+
+```bash
+pip3 install tensorrt   # or use the TensorRT that ships with JetPack on Jetson
+python3 misc/compile_tensorrt.py --in_path ~/wasrt_320x96_fp16.onnx --out_path ~/wasrt_320x96_fp16.engine
+``` 
+
+This parses the fp16 ONNX file and serializes a TensorRT engine (takes a few minutes while TensorRT autotunes kernels).
+
+## Running the TensorRT node
+
+```bash
+roslaunch wasrt_ros wasr_t_onnx.launch engine:=~/wasrt_320x96_fp16.engine camera_topic:=/camera/image_rect/compressed publish_preview:=true
+```
+
+Same topics as the PyTorch node: raw class ids on `/wasrt/image_seg`, optional overlay on `/wasrt/image_preview/compressed`. If the engine was built for a different resolution than the incoming images, the node resizes internally, but for correct camera geometry the preprocessor output should match the engine resolution.
+
+## Acknowledgements
+
+Model architecture and weights from [WaSR-T](https://github.com/lojzezust/WaSR-T) by Lojze Žust and Matej Kristan ("Temporal Context for Robust Maritime Obstacle Detection", IROS 2022).
