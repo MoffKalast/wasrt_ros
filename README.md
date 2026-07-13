@@ -1,6 +1,6 @@
 # wasrt_ros
 
-A self-contained ROS One (one) package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
+A self-contained ROS One package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
 (ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT for the purpose of verifying and filtering unreliable laserscan points.
 
 ![banner](misc/img.jpg)
