@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-
+import os
 import time
 import rospy
 import numpy as np
@@ -41,7 +41,7 @@ class WasrTNode:
 
 		# Save logger to instance to prevent garbage collection issues
 		self.logger = trt.Logger(trt.Logger.ERROR)
-		with open(engine_path, "rb") as f, trt.Runtime(self.logger) as runtime:
+		with open(os.path.expanduser(engine_path), "rb") as f, trt.Runtime(self.logger) as runtime:
 			self.engine = runtime.deserialize_cuda_engine(f.read())
 
 		self.context = self.engine.create_execution_context()

@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 from cv_bridge import CvBridge
 from sensor_msgs.msg import Image, CompressedImage, CameraInfo
+from std_msgs.msg import Bool
 
 class Geometry(object):
 	def __init__(self, sx, sy, x_offset, y_offset, out_w, out_h): self.sx, self.sy, self.x_offset, self.y_offset, self.out_w, self.out_h = sx, sy, x_offset, y_offset, out_w, out_h
@@ -70,10 +71,11 @@ class DnnPreprocessNode(object):
 		self.top_pct = rospy.get_param("~crop_top", 0.1)
 		self.bottom_pct = rospy.get_param("~crop_bottom", 0.32)
 		self.divisor = int(rospy.get_param("~divisor", 32))
-		self.jpeg_quality = int(rospy.get_param("~jpeg_quality", 95))
 		self.publish_preview = bool(rospy.get_param("~publish_preview", False))
+		
 		camera_topic = rospy.get_param("~camera_topic", "/camera/image_rect/compressed")
 		output_topic = rospy.get_param("~output_topic", "/camera/image_cropped")
+		enable_topic = rospy.get_param("~enable_topic", "/wasrt/enable")
 
 		if self.top_pct + self.bottom_pct >= 1.0:
 			rospy.logfatal("crop_top + crop_bottom must be < 1.0")
@@ -95,12 +97,27 @@ class DnnPreprocessNode(object):
 			self.image_sub = rospy.Subscriber(camera_topic, Image, self.image_cb, queue_size=1, buff_size=2 ** 24)
 		self.info_sub = rospy.Subscriber(base_topic + "/camera_info", CameraInfo, self.info_cb, queue_size=1)
 
+		# power gate for the whole segmentation pipeline: no cropped images -> inference nodes idle.
+		# enabled by default so the models get warmed up before the first enable/disable command arrives
+		self.enabled = True
+		self.enable_sub = rospy.Subscriber(enable_topic, Bool, self.enable_cb, queue_size=1)
+
 		rospy.loginfo("preprocessing %s (%s) -> %s", camera_topic, "CompressedImage" if self.compressed_input else "Image", output_topic)
 
+	def enable_cb(self, msg):
+		if msg.data != self.enabled:
+			rospy.loginfo("segmentation pipeline %s", "enabled" if msg.data else "disabled")
+		self.enabled = msg.data
+
 	def compressed_image_cb(self, msg):
+		# gate before decoding so a disabled pipeline costs (almost) nothing
+		if not self.enabled:
+			return
 		self.process(self.bridge.compressed_imgmsg_to_cv2(msg, desired_encoding="bgr8"), msg.header)
 
 	def image_cb(self, msg):
+		if not self.enabled:
+			return
 		self.process(self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8"), msg.header)
 
 	def process(self, img, header):

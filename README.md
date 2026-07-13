@@ -3,6 +3,16 @@
 A self-contained ROS One package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
 (ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT for the purpose of verifying and filtering unreliable laserscan points.
 
+
+Tested at 320x96:
+
+| GPU   | PyTorch | TensorRT |
+| --------- | ------: | -------: |
+| RTX 4060  |  75 fps |  140 fps |
+| Orin Nano |   5 fps |    9 fps |
+
+Orin performance isn't great, but is just borderline able to filter almost every scan at the typical 10 Hz and is extremely reliable at filtering out water reflections and direct sunlight.
+
 ![banner](misc/img.jpg)
 
 ## Nodes
@@ -12,6 +22,7 @@ Downsamples and crops the camera stream to a network-friendly resolution (divisi
 
 | Parameter | Default | Description |
 |---|---|---|
+| `~enable_topic` | `/wasrt/enable` | `std_msgs/Bool` power gate for the whole pipeline. Publishing `false` stops the cropped image stream, which idles both inference nodes (GPU goes quiet) and silences the lidar verifier. The node starts enabled so the model warms up; camera_info keeps publishing regardless. |
 | `~camera_topic` | `/camera/image_rect/compressed` | Input image topic. If it ends with `compressed` the node subscribes as `CompressedImage`, otherwise as `Image` (`/camera/image_rect`). The matching `CameraInfo` is read from `<base_topic>/camera_info`. |
 | `~output_topic` | `/camera/image_cropped` | Cropped output, published as `Image`. Adjusted intrinsics go to `<output_topic>/camera_info`. |
 | `~publish_preview` | `false` | Also publish the cropped image as `CompressedImage` on `<output_topic>/compressed`. |
@@ -116,6 +127,17 @@ roslaunch wasrt_ros wasr_t_onnx.launch engine:=~/wasrt_320x96_fp16.engine camera
 ```
 
 Same topics as the PyTorch node: raw class ids on `/wasrt/image_seg`, optional overlay on `/wasrt/image_preview/compressed`. If the engine was built for a different resolution than the incoming images, the node resizes internally, but for correct camera geometry the preprocessor output should match the engine resolution.
+
+## Pausing inference to save power
+
+The whole pipeline can be paused at runtime without killing any nodes to save power when navigation is idle:
+
+```bash
+rostopic pub -1 /wasrt/enable std_msgs/Bool "data: false"   # pause
+rostopic pub -1 /wasrt/enable std_msgs/Bool "data: true"    # resume
+```
+
+The gate sits in the camera preprocessor, so while disabled no cropped images are produced, both inference nodes idle with the GPU inactive, and the lidar verifier publishes nothing to `/scan_verified`, so costmap updates are stopped as well.
 
 ## Acknowledgements
 

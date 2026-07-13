@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import time
 from collections import OrderedDict
+import os
 
 import numpy as np
 import cv2
@@ -168,7 +169,7 @@ class WasrTNode:
 		self.dtype = torch.float16
 
 		model = WaSRT().eval()
-		model.load_state_dict(load_weights(weights))
+		model.load_state_dict(load_weights(os.path.expanduser(weights)))
 		self.model = model.to(self.device).half()
 		self.model.clear_state()
 
