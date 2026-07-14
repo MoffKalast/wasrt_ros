@@ -31,10 +31,6 @@ class WasrTNode:
 		self.publish_preview = bool(rospy.get_param('~publish_preview', False))
 
 		self.device = torch.device('cuda')
-		self.dtype = torch.float16
-
-		self.mean = torch.tensor(IMAGENET_MEAN, device=self.device, dtype=self.dtype).view(1, 3, 1, 1)
-		self.std = torch.tensor(IMAGENET_STD, device=self.device, dtype=self.dtype).view(1, 3, 1, 1)
 
 		self.torch_stream = torch.cuda.Stream()
 		self.stream = self.torch_stream.cuda_stream
@@ -45,7 +41,6 @@ class WasrTNode:
 			self.engine = runtime.deserialize_cuda_engine(f.read())
 
 		self.context = self.engine.create_execution_context()
-		self.mem = torch.zeros((1, HIST_LEN, 1024, SIZE[1] // 8, SIZE[0] // 8), device=self.device, dtype=self.dtype)
 
 		self.trt = {}
 		for i in range(self.engine.num_io_tensors):
@@ -66,6 +61,14 @@ class WasrTNode:
 			self.trt[name] = tensor
 			self.context.set_tensor_address(name, tensor.data_ptr())
 
+		# ping-pong buffers: mem_out of frame N is mem_in of frame N+1 via address swap, no copy needed
+		self.mem_alt = torch.zeros_like(self.trt["mem_in"])
+		self.trt["mem_in"].zero_()
+
+		self.dtype = self.trt["image"].dtype
+		self.mean = torch.tensor(IMAGENET_MEAN, device=self.device, dtype=self.dtype).view(1, 3, 1, 1)
+		self.std = torch.tensor(IMAGENET_STD, device=self.device, dtype=self.dtype).view(1, 3, 1, 1)
+
 		self.bridge = CvBridge()
 		self.pub_seg = rospy.Publisher(seg_topic, Image, queue_size=1)
 		self.pub_preview = rospy.Publisher(preview_topic, CompressedImage, queue_size=1) if self.publish_preview else None
@@ -73,33 +76,39 @@ class WasrTNode:
 		self._warmup()
 		rospy.loginfo('WaSR-T ready: size=%dx%d', SIZE[0], SIZE[1])
 
-	def _warmup(self):
-		dummy = torch.zeros((1, 3, SIZE[1], SIZE[0]), device=self.device, dtype=self.dtype)
-		self.trt["image"].copy_(dummy)
-		self.trt["mem_in"].zero_()
+	def _swap_mem(self):
+		self.trt["mem_in"], self.mem_alt = self.mem_alt, self.trt["mem_in"]
+		self.context.set_tensor_address("mem_in", self.trt["mem_in"].data_ptr())
+		self.context.set_tensor_address("mem_out", self.mem_alt.data_ptr())
 
-		for _ in range(20):
-			self.context.execute_async_v3(stream_handle=self.stream)
-		torch.cuda.synchronize()
+	def _warmup(self):
+		with torch.cuda.stream(self.torch_stream):
+			self.trt["image"].zero_()
+			self.trt["mem_in"].zero_()
+			for _ in range(20):
+				self.context.execute_async_v3(stream_handle=self.stream)
+		self.torch_stream.synchronize()
+		self.trt["mem_in"].zero_()
 
 	def infer(self, bgr):
 		resized = cv2.resize(bgr, SIZE, interpolation=cv2.INTER_LINEAR)
 		rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
 
-		image = torch.from_numpy(rgb).to(self.device).permute(2, 0, 1).unsqueeze(0).to(self.dtype).div_(255.0)
-		image = (image - self.mean) / self.std
+		with torch.cuda.stream(self.torch_stream):
+			image = torch.from_numpy(rgb).to(self.device, non_blocking=True).permute(2, 0, 1).unsqueeze(0).to(self.dtype).div_(255.0)
+			image = (image - self.mean) / self.std
+			self.trt["image"].copy_(image)
 
-		self.trt["image"].copy_(image)
-		self.trt["mem_in"].copy_(self.mem)
+			self.context.execute_async_v3(stream_handle=self.stream)
 
-		self.context.execute_async_v3(stream_handle=self.stream)
-		torch.cuda.synchronize()
+			# mem_alt now holds mem_out; it becomes mem_in on the next frame via _swap_mem
+			logits = F.interpolate(self.trt["logits"], size=(SIZE[1], SIZE[0]), mode='bilinear', align_corners=False)
+			labels = logits.argmax(1).squeeze(0).to(torch.uint8).cpu()
 
-		self.mem.copy_(self.trt["mem_out"])
-		logits = self.trt["logits"]
-		logits = F.interpolate(logits, size=(SIZE[1], SIZE[0]), mode='bilinear', align_corners=False)
+		self.torch_stream.synchronize()
+		self._swap_mem()
 
-		return logits.argmax(1).squeeze(0).to(torch.uint8).cpu().numpy()
+		return labels.numpy()
 
 	def publish(self, labels, bgr, header):
 		# labels are at network resolution; bring them back to the input frame size (nearest keeps class ids intact)

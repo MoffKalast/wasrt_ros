@@ -3,15 +3,14 @@
 A self-contained ROS One package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
 (ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT for the purpose of verifying and filtering unreliable laserscan points.
 
-
 Tested at 320x96:
 
 | GPU   | PyTorch | TensorRT |
 | --------- | ------: | -------: |
 | RTX 4060  |  75 fps |  140 fps |
-| Orin Nano |   5 fps |    9 fps |
+| Orin Nano |   5 fps |   11 fps |
 
-Orin performance isn't great, but is just borderline able to filter almost every scan at the typical 10 Hz and is extremely reliable at filtering out water reflections and direct sunlight.
+Orin performance isn't great, but it just about matches the required 10 Hz for filtering every lidar message for common lidars. The upside is that it's almost completely reliable at filtering out reflections, direct sunlight, and other marine sources of lidar false detections, so these verified points can be treated with very high confidence.
 
 ![banner](misc/img.jpg)
 
@@ -22,7 +21,7 @@ Downsamples and crops the camera stream to a network-friendly resolution (divisi
 
 | Parameter | Default | Description |
 |---|---|---|
-| `~enable_topic` | `/wasrt/enable` | `std_msgs/Bool` power gate for the whole pipeline. Publishing `false` stops the cropped image stream, which idles both inference nodes (GPU goes quiet) and silences the lidar verifier. The node starts enabled so the model warms up; camera_info keeps publishing regardless. |
+| `~enable_topic` | `/wasrt/enable` | `std_msgs/Bool` power gate for the whole pipeline. Publishing `false` stops the cropped image stream, which halts inference and lidar filtering. The node starts enabled so the model warms up; camera_info keeps publishing regardless. |
 | `~camera_topic` | `/camera/image_rect/compressed` | Input image topic. If it ends with `compressed` the node subscribes as `CompressedImage`, otherwise as `Image` (`/camera/image_rect`). The matching `CameraInfo` is read from `<base_topic>/camera_info`. |
 | `~output_topic` | `/camera/image_cropped` | Cropped output, published as `Image`. Adjusted intrinsics go to `<output_topic>/camera_info`. |
 | `~publish_preview` | `false` | Also publish the cropped image as `CompressedImage` on `<output_topic>/compressed`. |
@@ -42,7 +41,8 @@ Both share the same interface:
 | `~weights` (torch) / `~engine` (TensorRT) | — | Path to the `.pth` weights / `.engine` file. |
 
 #### `lidar_verifyer_node.py`
-Cross-checks a 2D lidar scan against the segmentation: each scan point is projected into the camera image and sampled from `/wasrt/image_seg`. Only points that land on an obstacle pixel (class 0) are kept; everything else — points on water/sky, outside the camera's field of view, or behind the camera — is set to NaN, since it cannot be verified. Requires the lidar -> camera tf and the preprocessor's `camera_info`.
+
+Cross-checks a 2D lidar scan against the segmentation: each scan point is projected into the camera image and sampled from `/wasrt/image_seg`. Only points that land on an obstacle pixel (class 0) are kept; everything else: points on water/sky, outside the camera's field of view, or behind the camera is set to NaN, since it cannot be verified. Requires the lidar -> camera tf and the preprocessor's `camera_info`.
 
 | Parameter | Default | Description |
 |---|---|---|
@@ -57,7 +57,7 @@ Cross-checks a 2D lidar scan against the segmentation: each scan point is projec
 
 ## Installation
 
-Tested on Ubuntu 22.04 + ROS One with an RTX 4060.
+Tested on Ubuntu 22.04 + ROS One.
 
 Install ROS dependencies:
 
@@ -104,7 +104,7 @@ The temporal context module keeps a rolling feature history, so the ONNX export 
 
 ```bash
 pip3 install onnx onnxruntime-gpu onnxconverter-common
-python3 misc/export_onnx.py --weights ~/wasrt_mastr1478.pth --out ~/wasrt_320x96_fp16.onnx --fp16
+python3 misc/export_onnx.py --weights ~/wasrt_mastr1478.pth --out ~/wasrt_320x96.onnx
 ```
 
 The script exports the model, validates it with `onnx.checker`, and cross-checks the ONNX Runtime output against PyTorch (the reported max logits diff should be small, e.g. < 1e-2 for fp16). Add `--bench 100` to benchmark ONNX Runtime inference.
@@ -114,8 +114,8 @@ The script exports the model, validates it with `onnx.checker`, and cross-checks
 TensorRT engines are specific to the GPU and TensorRT version, so build the engine on the machine that will run inference:
 
 ```bash
-pip3 install tensorrt   # or use the TensorRT that ships with JetPack on Jetson
-python3 misc/compile_tensorrt.py --in_path ~/wasrt_320x96_fp16.onnx --out_path ~/wasrt_320x96_fp16.engine
+pip3 install tensorrt
+python3 misc/compile_tensorrt.py --in_path ~/wasrt_320x96.onnx --out_path ~/wasrt_320x96_fp16.engine
 ``` 
 
 This parses the fp16 ONNX file and serializes a TensorRT engine (takes a few minutes while TensorRT autotunes kernels).
