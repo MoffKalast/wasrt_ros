@@ -7,7 +7,7 @@ Tested at 320x96:
 
 | GPU   | PyTorch | TensorRT |
 | --------- | ------: | -------: |
-| RTX 4060  |  75 fps |  140 fps |
+| RTX 4060  |  75 fps |  165 fps |
 | Orin Nano |   5 fps |   11 fps |
 
 Orin performance isn't great, but it just about matches the required 10 Hz for filtering every lidar message for common lidars. The upside is that it's almost completely reliable at filtering out reflections, direct sunlight, and other marine sources of lidar false detections, so these verified points can be treated with very high confidence.
@@ -115,7 +115,12 @@ TensorRT engines are specific to the GPU and TensorRT version, so build the engi
 
 ```bash
 pip3 install tensorrt
-python3 misc/compile_tensorrt.py --in_path ~/wasrt_320x96.onnx --out_path ~/wasrt_320x96_fp16.engine
+
+#tensorrt <10.7
+python3 misc/compile_tensorrt_jetpack6.py --in_path ~/wasrt_320x96.onnx --out_path ~/wasrt_320x96_fp16.engine
+
+#tensorrt >10.7
+python3 misc/compile_tensorrt_jetpack7.py --in_path ~/wasrt_320x96.onnx --out_path ~/wasrt_320x96_fp16.engine
 ``` 
 
 This parses the fp16 ONNX file and serializes a TensorRT engine (takes a few minutes while TensorRT autotunes kernels).
