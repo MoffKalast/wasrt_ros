@@ -40,6 +40,18 @@ Both share the same interface:
 | `~publish_preview` | `false` | Enable the preview publisher. |
 | `~weights` (torch) / `~engine` (TensorRT) | — | Path to the `.pth` weights / `.engine` file. |
 
+#### `ewasr_node.py` (PyTorch) and `ewasr_onnx_node.py` (TensorRT)
+The eWaSR equivalents, with the same four topic parameters above. Extra parameters:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `~compressed_input` | `false` | Subscribe as `CompressedImage` instead of `Image`. |
+| `~resize_input` | `true` | Resize mismatched frames to the model resolution instead of skipping them. |
+| `~width` / `~height` (torch only) | `640` / `192` | Model input resolution, both divisible by 32. The TensorRT node reads this from the engine instead. |
+| `~precision` (torch only) | `half` | One of `half`, `autocast`, `float`. |
+
+See the [eWaSR](#ewasr) section below for the export and engine build.
+
 #### `lidar_verifyer_node.py`
 
 Cross-checks a 2D lidar scan against the segmentation: each scan point is projected into the camera image and sampled from `/wasrt/image_seg`. Only points that land on an obstacle pixel (class 0) are kept; everything else: points on water/sky, outside the camera's field of view, or behind the camera is set to NaN, since it cannot be verified. Requires the lidar -> camera tf and the preprocessor's `camera_info`.
@@ -132,6 +144,55 @@ roslaunch wasrt_ros wasr_t_onnx.launch engine:=~/wasrt_320x96_fp16.engine camera
 ```
 
 Same topics as the PyTorch node: raw class ids on `/wasrt/image_seg`, optional overlay on `/wasrt/image_preview/compressed`. If the engine was built for a different resolution than the incoming images, the node resizes internally, but for correct camera geometry the preprocessor output should match the engine resolution.
+
+## eWaSR
+
+[eWaSR](https://github.com/tersekmatija/eWaSR) is a lighter, single-frame alternative to WaSR-T: no temporal context module, so no rolling feature history and no memory state to carry between frames. It is a drop-in replacement at the topic level, publishing the same class ids on the same topics, so the preprocessor, lidar verifier, and ground projector are unchanged.
+
+Only the non-IMU variants are supported. Both nodes recover the architecture (backbone depth, decoder widths, mixer types, class count) from the checkpoint itself rather than from a `--backbone` string, so a mismatched config fails loudly instead of loading and producing nonsense.
+
+### Running the PyTorch node
+
+```bash
+roslaunch wasrt_ros ewasr.launch weights:=~/ewasr_resnet18.pth camera_topic:=/camera/image_rect/compressed publish_preview:=true
+```
+
+`scripts/ewasr_node.py` takes `~width`/`~height` (default 640x192, both divisible by 32) and `~precision` (`half`, `autocast`, or `float`). `half` casts the whole graph including BatchNorm and the MetaFormer `layer_scale` parameters, whose 1e-5 init is subnormal in fp16; `autocast` keeps those in fp32 and casts only the convs, which is the safer choice if output looks noisier on-vehicle than it did in validation.
+
+### Exporting to ONNX
+
+eWaSR is stateless, so the export has a single `image` input and single `logits` output, with no `mem_in`/`mem_out` pair. The resolution is fixed at trace time: edit the `SIZE` constant at the top of `misc/export_ewasr_onnx.py`, then:
+
+```bash
+pip3 install onnx onnxruntime-gpu onnxconverter-common
+python3 misc/export_ewasr_onnx.py --weights ~/ewasr_resnet18.pth --out ~/ewasr_640x192.onnx
+```
+
+The script validates with `onnx.checker`, cross-checks ONNX Runtime against PyTorch, and additionally reports the fraction of pixels whose argmax flips, since class ids are what the ROS node actually publishes. Add `--bench 100` to benchmark ONNX Runtime.
+
+Export fp32 and let the TensorRT step handle the cast. `--fp16` exists for parity with `export_onnx.py` but the `layer_scale` parameters noted above make it the worse path here.
+
+Note that the decoder's feature-pyramid upsampling uses `F.interpolate` in the export script where `scripts/ewasr_node.py` uses `torchvision`'s `TF.resize`. `TF.resize` defaults to `antialias=True`, which traces to `aten::_upsample_bilinear2d_aa` and has no ONNX opset 17 equivalent. Those calls only ever upsample, where antialias is a no-op, so the two graphs are numerically identical.
+
+### Building the TensorRT engine
+
+The same version-specific compile scripts are used as for WaSR-T, since they are model-agnostic:
+
+```bash
+#tensorrt <10.7
+python3 misc/compile_tensorrt_jetpack6.py --in_path ~/ewasr_640x192.onnx --out_path ~/ewasr_640x192_fp16.engine
+
+#tensorrt >10.7
+python3 misc/compile_tensorrt_jetpack7.py --in_path ~/ewasr_640x192.onnx --out_path ~/ewasr_640x192_fp16.engine
+```
+
+### Running the TensorRT node
+
+```bash
+roslaunch wasrt_ros ewasr_onnx.launch engine:=~/ewasr_640x192_fp16.engine camera_topic:=/camera/image_rect/compressed publish_preview:=true
+```
+
+`scripts/ewasr_onnx_node.py` reads its input resolution back from the engine's tensor shapes instead of taking `~width`/`~height`, since the resolution is baked in at export time and a launch arg that disagreed with the engine would fail silently. As with the WaSR-T TensorRT node, mismatched incoming frames are resized internally, but the preprocessor output should match the engine resolution for the camera geometry to be correct.
 
 ## Pausing inference to save power
 

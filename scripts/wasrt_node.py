@@ -17,7 +17,7 @@ from cv_bridge import CvBridge
 # Fixed by the published WaSR-T ResNet-101 weights: 3 classes (0 obstacle, 1 water, 2 sky), context length 5.
 NUM_CLASSES = 3
 HIST_LEN = 5
-SIZE = (320, 96)
+DEFAULT_SIZE = (640, 192)
 SEGMENTATION_COLORS = np.array([[247, 195, 37], [41, 167, 224], [90, 75, 164]], np.uint8)
 IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
@@ -159,9 +159,14 @@ class WasrTNode:
 		rospy.init_node('wasr_t_node')
 		weights = rospy.get_param('~weights')
 		self.image_topic = rospy.get_param('~image_topic', '/camera/image_cropped')
-		seg_topic = rospy.get_param('~seg_topic', '/wasrt/image_seg')
-		preview_topic = rospy.get_param('~preview_topic', '/wasrt/image_preview/compressed')
+		seg_topic = rospy.get_param('~seg_topic', '/wasr/image_seg')
+		preview_topic = rospy.get_param('~preview_topic', '/wasr/image_preview/compressed')
 		self.publish_preview = bool(rospy.get_param('~publish_preview', False))
+
+		self.size = (int(rospy.get_param('~width', DEFAULT_SIZE[0])), int(rospy.get_param('~height', DEFAULT_SIZE[1])))
+		if self.size[0] % 32 or self.size[1] % 32:
+			rospy.logfatal('width/height must both be multiples of 32, got %dx%d', self.size[0], self.size[1])
+			raise ValueError('invalid input size')
 
 		# Input size is fixed, so let cuDNN pick the fastest conv algorithm (notably for the dilated layers).
 		torch.backends.cudnn.benchmark = True
@@ -182,11 +187,11 @@ class WasrTNode:
 		self.pub_preview = rospy.Publisher(preview_topic, CompressedImage, queue_size=1) if self.publish_preview else None
 
 		self._warmup()
-		rospy.loginfo('WaSR-T ready: size=%dx%d', SIZE[0], SIZE[1])
+		rospy.loginfo('WaSR-T ready: size=%dx%d', self.size[0], self.size[1])
 
 	def _warmup(self):
 		# Run cuDNN autotuning / lazy CUDA init now so the first real frame is not stalled for seconds.
-		dummy = torch.zeros(1, 3, SIZE[1], SIZE[0], device=self.device, dtype=self.dtype)
+		dummy = torch.zeros(1, 3, self.size[1], self.size[0], device=self.device, dtype=self.dtype)
 		with torch.inference_mode():
 			for _ in range(3):
 				self.model(dummy)
@@ -200,7 +205,7 @@ class WasrTNode:
 		with torch.inference_mode():
 			logits = self.model(t)
 		# Backbone output stride leaves logits coarser than the input; upsample back to label resolution.
-		logits = F.interpolate(logits, size=(SIZE[1], SIZE[0]), mode='bilinear', align_corners=False)
+		logits = F.interpolate(logits, size=(self.size[1], self.size[0]), mode='bilinear', align_corners=False)
 		return logits.argmax(1).squeeze(0).to(torch.uint8).cpu().numpy()
 
 	def publish(self, labels, original_bgr, header):
@@ -211,6 +216,8 @@ class WasrTNode:
 		if self.pub_preview is not None:
 			color_bgr = cv2.cvtColor(SEGMENTATION_COLORS[labels], cv2.COLOR_RGB2BGR)
 			overlay = cv2.addWeighted(original_bgr, 0.5, color_bgr, 0.5, 0.0)
+			cv2.putText(overlay, "WaSR-T (MaSTr1478)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2, cv2.LINE_AA)
+			cv2.putText(overlay, "WaSR-T (MaSTr1478)", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1, cv2.LINE_AA)
 			ok, jpg = cv2.imencode(".jpg", overlay, [cv2.IMWRITE_JPEG_QUALITY, 80])
 			if ok:
 				msg = CompressedImage()
@@ -228,8 +235,8 @@ class WasrTNode:
 			bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding='bgr8')
 			if bgr is None:
 				continue
-			if bgr.shape[1] != SIZE[0] or bgr.shape[0] != SIZE[1]:
-				rospy.logwarn_throttle(5.0, 'input %dx%d != expected %dx%d, skipping' % (bgr.shape[1], bgr.shape[0], SIZE[0], SIZE[1]))
+			if bgr.shape[1] != self.size[0] or bgr.shape[0] != self.size[1]:
+				rospy.logwarn_throttle(5.0, 'input %dx%d != expected %dx%d, skipping' % (bgr.shape[1], bgr.shape[0], self.size[0], self.size[1]))
 				continue
 			t0 = time.time()
 			labels = self.infer(bgr)

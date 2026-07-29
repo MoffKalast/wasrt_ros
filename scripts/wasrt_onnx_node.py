@@ -26,8 +26,8 @@ class WasrTNode:
 
 		engine_path = rospy.get_param('~engine', '')
 		self.image_topic = rospy.get_param('~image_topic', '/camera/image_cropped')
-		seg_topic = rospy.get_param('~seg_topic', '/wasrt/image_seg')
-		preview_topic = rospy.get_param('~preview_topic', '/wasrt/image_preview/compressed')
+		seg_topic = rospy.get_param('~seg_topic', '/wasr/image_seg')
+		preview_topic = rospy.get_param('~preview_topic', '/wasr/image_preview/compressed')
 		self.publish_preview = bool(rospy.get_param('~publish_preview', False))
 
 		self.device = torch.device('cuda')
