@@ -13,7 +13,8 @@
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>geometry_msgs</depend>
-  <depend>cv_bridge</depend>
+  <!-- python-only: the c++ nodes convert sensor_msgs/Image themselves to keep a single OpenCV in the process -->
+  <exec_depend>cv_bridge</exec_depend>
   <depend>tf2_ros</depend>
   <depend>message_filters</depend>
   <depend>eigen</depend>

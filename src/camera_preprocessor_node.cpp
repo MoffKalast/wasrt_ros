@@ -3,13 +3,13 @@
 #include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <std_msgs/Bool.h>
-#include <cv_bridge/cv_bridge.h>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <string>
 #include <vector>
 #include <stdexcept>
 #include "wasrt_ros/geometry.h"
+#include "wasrt_ros/image_msg.h"
 
 using namespace wasrt;
 
@@ -74,14 +74,12 @@ private:
 
 	void imageCb(const sensor_msgs::Image::ConstPtr& msg) {
 		if (!enabled_) return;
-		cv_bridge::CvImageConstPtr cv_ptr;
 		try {
-			cv_ptr = cv_bridge::toCvShare(msg, "bgr8");
-		} catch (const cv_bridge::Exception& e) {
-			ROS_WARN_THROTTLE(5.0, "cv_bridge: %s", e.what());
-			return;
+			// zero-copy when the publisher already sends bgr8, which mjpeg_usb_cam_node does
+			process(wasrt::bgrFromImageMsg(*msg, bgr_scratch_), msg->header);
+		} catch (const std::exception& e) {
+			ROS_WARN_THROTTLE(5.0, "image unusable: %s", e.what());
 		}
-		process(cv_ptr->image, msg->header);
 	}
 
 	void process(const cv::Mat& img, const std_msgs::Header& header) {
@@ -99,7 +97,7 @@ private:
 		cv::resize(img, resized, cv::Size(round_half_even(w * g.sx), round_half_even(h * g.sy)), 0, 0, cv::INTER_AREA);
 		cv::Mat cropped = resized(cv::Rect(g.x_offset, g.y_offset, g.out_w, g.out_h));
 
-		sensor_msgs::ImagePtr out_msg = cv_bridge::CvImage(header, "bgr8", cropped).toImageMsg();
+		sensor_msgs::ImagePtr out_msg = wasrt::imageMsgFromMat(header, "bgr8", cropped);
 		image_pub_.publish(out_msg);
 
 		if (publish_preview_) {
@@ -139,6 +137,7 @@ private:
 	bool publish_preview_ = false;
 	bool compressed_input_ = false;
 	bool enabled_ = true;
+	cv::Mat bgr_scratch_;
 
 	ros::Publisher image_pub_, info_pub_, preview_pub_;
 	ros::Subscriber image_sub_, info_sub_, enable_sub_;
@@ -148,6 +147,7 @@ int main(int argc, char** argv) {
 	ros::init(argc, argv, "dnn_preprocess");
 	ros::NodeHandle nh;
 	ros::NodeHandle pnh("~");
+	wasrt::assertOpenCVRuntime();
 	DnnPreprocessNode node(nh, pnh);
 	ros::spin();
 	return 0;

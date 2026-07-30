@@ -3,7 +3,6 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/CompressedImage.h>
 #include <sensor_msgs/LaserScan.h>
-#include <cv_bridge/cv_bridge.h>
 #include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <message_filters/subscriber.h>
@@ -18,6 +17,7 @@
 #include <limits>
 #include <string>
 #include <vector>
+#include "wasrt_ros/image_msg.h"
 
 typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::LaserScan> SyncPolicy;
 
@@ -136,15 +136,15 @@ private:
 			return;
 		}
 
-		cv_bridge::CvImageConstPtr labels_ptr;
+		// view into seg_msg, which outlives this callback
+		cv::Mat labels;
 		try {
-			labels_ptr = cv_bridge::toCvShare(seg_msg, "mono8");
-		} catch (const cv_bridge::Exception& e) {
+			labels = wasrt::mono8FromImageMsg(*seg_msg);
+		} catch (const std::exception& e) {
 			ROS_WARN_THROTTLE(2.0, "verification failed, not publishing verified scan: %s", e.what());
 			forwardPreview();
 			return;
 		}
-		const cv::Mat& labels = labels_ptr->image;
 		const int w = labels.cols, h = labels.rows;
 
 		const int m = static_cast<int>(idx.size());
@@ -232,6 +232,7 @@ int main(int argc, char** argv) {
 	ros::init(argc, argv, "lidar_verifyer_node");
 	ros::NodeHandle nh;
 	ros::NodeHandle pnh("~");
+	wasrt::assertOpenCVRuntime();
 	LidarVerifier node(nh, pnh);
 	ros::spin();
 	return 0;

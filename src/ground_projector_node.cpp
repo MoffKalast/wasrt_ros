@@ -3,7 +3,6 @@
 #include <sensor_msgs/Image.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sensor_msgs/PointField.h>
-#include <cv_bridge/cv_bridge.h>
 #include <opencv2/imgproc.hpp>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -16,6 +15,7 @@
 #include <vector>
 #include <algorithm>
 #include <unordered_set>
+#include "wasrt_ros/image_msg.h"
 
 class GroundProjector {
 public:
@@ -177,14 +177,14 @@ private:
 	void segCb(const sensor_msgs::Image::ConstPtr& msg) {
 		if (!project(msg->header.stamp)) return;
 
-		cv_bridge::CvImageConstPtr labels_ptr;
+		// view into msg, which outlives this callback
+		cv::Mat labels;
 		try {
-			labels_ptr = cv_bridge::toCvShare(msg, "mono8");
-		} catch (const cv_bridge::Exception& e) {
-			ROS_WARN_THROTTLE(2.0, "seg decode failed: %s", e.what());
+			labels = wasrt::mono8FromImageMsg(*msg);
+		} catch (const std::exception& e) {
+			ROS_WARN_THROTTLE(2.0, "seg image unusable: %s", e.what());
 			return;
 		}
-		const cv::Mat& labels = labels_ptr->image;
 		if (!dimsMatch(labels)) return;
 
 		cv::Mat obstacle_mask = classMask(labels, obstacle_class_);
@@ -260,6 +260,7 @@ int main(int argc, char** argv) {
 	ros::init(argc, argv, "ground_projector_node");
 	ros::NodeHandle nh;
 	ros::NodeHandle pnh("~");
+	wasrt::assertOpenCVRuntime();
 	GroundProjector node(nh, pnh);
 	ros::spin();
 	return 0;

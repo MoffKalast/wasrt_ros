@@ -9,15 +9,24 @@ find_package(catkin REQUIRED COMPONENTS
     std_msgs
     sensor_msgs
     geometry_msgs
-    cv_bridge
     tf2_ros
     message_filters
 )
-find_package(OpenCV REQUIRED)
+# cv_bridge is deliberately absent: it links the distro OpenCV 4.5 while these nodes build against
+# JetPack's 4.8, and two OpenCVs in one process bind to whichever the loader saw first and crash.
+# Image conversion lives in include/wasrt_ros/image_msg.h instead. The python nodes still use the
+# python cv_bridge, which resolves through PYTHONPATH at runtime and never touches this link line.
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(Eigen3 REQUIRED)
 
+# tripwire: if a catkin component ever drags OpenCV in again, say so here rather than at runtime
+string(REGEX MATCHALL "libopencv_[a-z_0-9]+" _catkin_opencv "${catkin_LIBRARIES}")
+if(_catkin_opencv)
+    message(WARNING "catkin_LIBRARIES pulls in OpenCV (${_catkin_opencv}); a second OpenCV will be loaded at runtime")
+endif()
+
 catkin_package(
-    CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs geometry_msgs cv_bridge tf2_ros message_filters
+    CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs geometry_msgs tf2_ros message_filters
 )
 
 include_directories(
