@@ -21,6 +21,7 @@ public:
 		pnh.param("crop_bottom", bottom_pct_, 0.32);
 		pnh.param("divisor", divisor_, 32);
 		pnh.param("publish_preview", publish_preview_, false);
+		pnh.param("start_enabled", enabled_, true);
 
 		std::string camera_topic, output_topic, enable_topic;
 		pnh.param<std::string>("camera_topic", camera_topic, "/camera/image_rect/compressed");
@@ -35,6 +36,8 @@ public:
 		const std::string suffix = "/compressed";
 		compressed_input_ = camera_topic.size() >= suffix.size() && camera_topic.compare(camera_topic.size() - suffix.size(), suffix.size(), suffix) == 0;
 		std::string base_topic = compressed_input_ ? camera_topic.substr(0, camera_topic.size() - suffix.size()) : camera_topic;
+		camera_topic_ = camera_topic;
+		nh_ = nh;
 
 		image_pub_ = nh.advertise<sensor_msgs::Image>(output_topic, 1);
 		info_pub_ = nh.advertise<sensor_msgs::CameraInfo>(output_topic + "/camera_info", 1);
@@ -43,23 +46,35 @@ public:
 			preview_pub_ = nh.advertise<sensor_msgs::CompressedImage>(output_topic + "/compressed", 1);
 		}
 
-		if (compressed_input_){
-			image_sub_ = nh.subscribe(camera_topic, 1, &DnnPreprocessNode::compressedImageCb, this, ros::TransportHints().tcpNoDelay());
-		}else{
-			image_sub_ = nh.subscribe(camera_topic, 1, &DnnPreprocessNode::imageCb, this, ros::TransportHints().tcpNoDelay());
-		}
+		if (enabled_) subscribeImage();
 
 		// power gate: no cropped images -> inference nodes idle. Enabled by default so models warm up before the first command.
 		enable_sub_ = nh.subscribe(enable_topic, 1, &DnnPreprocessNode::enableCb, this);
 		info_sub_ = nh.subscribe(base_topic + "/camera_info", 1, &DnnPreprocessNode::infoCb, this);
 
-		ROS_INFO("preprocessing %s (%s) -> %s", camera_topic.c_str(), compressed_input_ ? "CompressedImage" : "Image", output_topic.c_str());
+		ROS_INFO("preprocessing %s (%s) -> %s [%s]", camera_topic.c_str(), compressed_input_ ? "CompressedImage" : "Image", output_topic.c_str(), enabled_ ? "enabled" : "disabled");
 	}
 
 private:
+	void subscribeImage() {
+		if (compressed_input_){
+			image_sub_ = nh_.subscribe(camera_topic_, 1, &DnnPreprocessNode::compressedImageCb, this, ros::TransportHints().tcpNoDelay());
+		}else{
+			image_sub_ = nh_.subscribe(camera_topic_, 1, &DnnPreprocessNode::imageCb, this, ros::TransportHints().tcpNoDelay());
+		}
+	}
+
 	void enableCb(const std_msgs::Bool::ConstPtr& msg) {
-		if (msg->data != enabled_) ROS_INFO("segmentation pipeline %s", msg->data ? "enabled" : "disabled");
+		if (msg->data == enabled_) return;
+
 		enabled_ = msg->data;
+		ROS_INFO("segmentation pipeline %s", enabled_ ? "enabled" : "disabled");
+
+		if (enabled_){
+			subscribeImage();
+		}else{
+			image_sub_.shutdown();
+		}
 	}
 
 	void compressedImageCb(const sensor_msgs::CompressedImage::ConstPtr& msg) {
@@ -138,6 +153,9 @@ private:
 	bool compressed_input_ = false;
 	bool enabled_ = true;
 	cv::Mat bgr_scratch_;
+
+	ros::NodeHandle nh_;
+	std::string camera_topic_;
 
 	ros::Publisher image_pub_, info_pub_, preview_pub_;
 	ros::Subscriber image_sub_, info_sub_, enable_sub_;
