@@ -46,7 +46,9 @@ public:
 			preview_pub_ = nh.advertise<sensor_msgs::CompressedImage>(output_topic + "/compressed", 1);
 		}
 
-		if (enabled_) subscribeImage();
+		if (enabled_){
+			subscribeImage();
+		}
 
 		// power gate: no cropped images -> inference nodes idle. Enabled by default so models warm up before the first command.
 		enable_sub_ = nh.subscribe(enable_topic, 1, &DnnPreprocessNode::enableCb, this);
@@ -56,6 +58,20 @@ public:
 	}
 
 private:
+
+	double scale_, top_pct_, bottom_pct_;
+	int divisor_;
+	bool publish_preview_ = false;
+	bool compressed_input_ = false;
+	bool enabled_ = true;
+	cv::Mat bgr_scratch_;
+
+	ros::NodeHandle nh_;
+	std::string camera_topic_;
+
+	ros::Publisher image_pub_, info_pub_, preview_pub_;
+	ros::Subscriber image_sub_, info_sub_, enable_sub_;
+
 	void subscribeImage() {
 		if (compressed_input_){
 			image_sub_ = nh_.subscribe(camera_topic_, 1, &DnnPreprocessNode::compressedImageCb, this, ros::TransportHints().tcpNoDelay());
@@ -65,7 +81,9 @@ private:
 	}
 
 	void enableCb(const std_msgs::Bool::ConstPtr& msg) {
-		if (msg->data == enabled_) return;
+		if (msg->data == enabled_){
+			return;
+		}
 
 		enabled_ = msg->data;
 		ROS_INFO("segmentation pipeline %s", enabled_ ? "enabled" : "disabled");
@@ -78,7 +96,10 @@ private:
 	}
 
 	void compressedImageCb(const sensor_msgs::CompressedImage::ConstPtr& msg) {
-		if (!enabled_) return;
+		if (!enabled_){
+			return;
+		}
+
 		cv::Mat img = cv::imdecode(cv::Mat(msg->data), cv::IMREAD_COLOR);
 		if (img.empty()) {
 			ROS_WARN_THROTTLE(5.0, "failed to decode compressed image");
@@ -88,7 +109,9 @@ private:
 	}
 
 	void imageCb(const sensor_msgs::Image::ConstPtr& msg) {
-		if (!enabled_) return;
+		if (!enabled_){
+			return;
+		}
 		try {
 			// zero-copy when the publisher already sends bgr8, which mjpeg_usb_cam_node does
 			process(wasrt::bgrFromImageMsg(*msg, bgr_scratch_), msg->header);
@@ -102,7 +125,10 @@ private:
 		long h = img.rows;
 		Geometry g = compute_geometry(w, h, scale_, top_pct_, bottom_pct_, divisor_);
 
-		if (g.h_after < divisor_) ROS_WARN_THROTTLE(5.0, "vertical crop leaves height %ld < divisor %d", g.h_after, divisor_);
+		if (g.h_after < divisor_){
+			ROS_WARN_THROTTLE(5.0, "vertical crop leaves height %ld < divisor %d", g.h_after, divisor_);
+		}
+		
 		if (g.out_w <= 0 || g.out_h <= 0) {
 			ROS_WARN_THROTTLE(5.0, "degenerate output size, dropping frame");
 			return;
@@ -146,19 +172,6 @@ private:
 		out.roi.do_rectify = msg->roi.do_rectify;
 		info_pub_.publish(out);
 	}
-
-	double scale_, top_pct_, bottom_pct_;
-	int divisor_;
-	bool publish_preview_ = false;
-	bool compressed_input_ = false;
-	bool enabled_ = true;
-	cv::Mat bgr_scratch_;
-
-	ros::NodeHandle nh_;
-	std::string camera_topic_;
-
-	ros::Publisher image_pub_, info_pub_, preview_pub_;
-	ros::Subscriber image_sub_, info_sub_, enable_sub_;
 };
 
 int main(int argc, char** argv) {

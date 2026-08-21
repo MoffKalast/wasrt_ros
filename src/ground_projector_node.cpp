@@ -51,7 +51,31 @@ public:
 	}
 
 private:
-	void infoCb(const sensor_msgs::CameraInfo::ConstPtr& msg) { camera_info_ = msg; }
+	
+	std::string target_frame_;
+	double z_height_, max_range_obstacles_, max_range_free_, h_stride_frac_, group_cell_size_;
+	double roll_unc_, roll_pad_factor_;
+	int obstacle_class_, free_class_, erode_radius_;
+	cv::Mat erode_kernel_;
+
+	sensor_msgs::CameraInfo::ConstPtr camera_info_;
+
+	bool rays_built_ = false;
+	Eigen::Matrix<double, 3, Eigen::Dynamic> d_cam_;
+	std::vector<int> grid_u_, grid_v_;
+
+	std::vector<int> proj_u_, proj_v_;
+	std::vector<float> proj_xyz_, proj_depth_;
+
+	tf2_ros::Buffer tf_buffer_;
+	tf2_ros::TransformListener tf_listener_;
+
+	ros::Subscriber info_sub_, seg_sub_;
+	ros::Publisher obstacle_cloud_pub_, free_cloud_pub_;
+
+	void infoCb(const sensor_msgs::CameraInfo::ConstPtr& msg) {
+		camera_info_ = msg;
+	}
 
 	static Eigen::Matrix4d toMatrix(const geometry_msgs::TransformStamped& t) {
 		const auto& q = t.transform.rotation;
@@ -62,18 +86,23 @@ private:
 		M(0, 3) = tr.x;
 		M(1, 3) = tr.y;
 		M(2, 3) = tr.z;
+
 		return M;
 	}
 
 	bool buildRays() {
-		if (rays_built_) return true;
-		if (!camera_info_) return false;
+		if (rays_built_)
+			return true;
+
+		if (!camera_info_)
+			return false;
 
 		Eigen::Matrix<double, 3, 4> P;
 		for (int i = 0; i < 12; ++i) P(i / 4, i % 4) = camera_info_->P[i];
 		double fx = P(0, 0), fy = P(1, 1), cx = P(0, 2), cy = P(1, 2);
-		long w = camera_info_->width, h = camera_info_->height;
 
+		long w = camera_info_->width;
+		long h = camera_info_->height;
 		long h_stride = std::max(1L, static_cast<long>(std::lround(h_stride_frac_ * w)));
 
 		// roll uncertainty phi shifts a ray's pitch by ~a*phi with a=(u-cx)/fx, worst at the image sides, so drop the outer columns; pad factor is extra margin
@@ -82,6 +111,7 @@ private:
 
 		grid_u_.clear();
 		grid_v_.clear();
+
 		// meshgrid(us, vs) raveled row-major: outer loop over v, inner over u
 		for (long v = 0; v < h; ++v)
 			for (long u = roll_cut; u < w - roll_cut; u += h_stride) {
@@ -90,6 +120,7 @@ private:
 			}
 
 		const int N = static_cast<int>(grid_u_.size());
+
 		// camera optical frame: x right, y down, z forward
 		d_cam_.resize(3, N);
 		for (int i = 0; i < N; ++i) {
@@ -97,12 +128,15 @@ private:
 			d_cam_(1, i) = (grid_v_[i] - cy) / fy;
 			d_cam_(2, i) = 1.0;
 		}
+
 		rays_built_ = true;
 		return true;
 	}
 
 	bool project(const ros::Time& stamp) {
-		if (!buildRays()) return false;
+		if (!buildRays()){
+			return false;
+		}
 
 		geometry_msgs::TransformStamped tf_msg;
 		try {
@@ -123,11 +157,16 @@ private:
 		proj_v_.clear();
 		proj_xyz_.clear();
 		proj_depth_.clear();
+
 		for (int i = 0; i < N; ++i) {
 			double dz = d(2, i);
-			if (std::abs(dz) <= 1e-9) continue;
+			if (std::abs(dz) <= 1e-9)
+				continue;
+
 			double t = (z_height_ - o(2)) / dz;
-			if (t <= 0.0) continue;
+			if (t <= 0.0)
+				continue;
+			
 			// d_cam has unit z so t is optical-axis depth; per-class range cuts happen in segCb
 			proj_u_.push_back(grid_u_[i]);
 			proj_v_.push_back(grid_v_[i]);
@@ -140,7 +179,9 @@ private:
 	}
 
 	bool dimsMatch(const cv::Mat& img) {
-		if (img.rows == static_cast<int>(camera_info_->height) && img.cols == static_cast<int>(camera_info_->width)) return true;
+		if (img.rows == static_cast<int>(camera_info_->height) && img.cols == static_cast<int>(camera_info_->width))
+			return true;
+
 		ROS_WARN_THROTTLE(2.0, "seg image %dx%d does not match camera_info %dx%d", img.cols, img.rows, camera_info_->width, camera_info_->height);
 		return false;
 	}
@@ -149,13 +190,18 @@ private:
 		cv::Mat mask;
 		cv::compare(labels, cls, mask, cv::CMP_EQ);
 		// erode each class in full-res label space so unreliable border pixels are dropped before sampling
-		if (!erode_kernel_.empty()) cv::erode(mask, mask, erode_kernel_);
+		if (!erode_kernel_.empty()){
+			cv::erode(mask, mask, erode_kernel_);
+		}
 		return mask;
 	}
 
 	// absolute cell indices in the fixed target frame so a ground patch maps to the same cell across frames; keep the first point per cell
 	std::vector<float> groupGround(const std::vector<float>& xyz) {
-		if (xyz.empty() || group_cell_size_ <= 0.0) return xyz;
+		if (xyz.empty() || group_cell_size_ <= 0.0){
+			return xyz;
+		}
+
 		std::unordered_set<uint64_t> seen;
 		const size_t count = xyz.size() / 3;
 		seen.reserve(count * 2);
@@ -175,7 +221,9 @@ private:
 	}
 
 	void segCb(const sensor_msgs::Image::ConstPtr& msg) {
-		if (!project(msg->header.stamp)) return;
+		if (!project(msg->header.stamp)){
+			return;
+		}
 
 		// view into msg, which outlives this callback
 		cv::Mat labels;
@@ -185,7 +233,10 @@ private:
 			ROS_WARN_THROTTLE(2.0, "seg image unusable: %s", e.what());
 			return;
 		}
-		if (!dimsMatch(labels)) return;
+
+		if (!dimsMatch(labels)){
+			return;
+		}
 
 		cv::Mat obstacle_mask = classMask(labels, obstacle_class_);
 		cv::Mat free_mask = classMask(labels, free_class_);
@@ -218,6 +269,7 @@ private:
 		cloud.height = 1;
 		cloud.width = static_cast<uint32_t>(xyz.size() / 3);
 		cloud.fields.resize(3);
+
 		const char* names[3] = {"x", "y", "z"};
 		for (int i = 0; i < 3; ++i) {
 			cloud.fields[i].name = names[i];
@@ -225,35 +277,19 @@ private:
 			cloud.fields[i].datatype = sensor_msgs::PointField::FLOAT32;
 			cloud.fields[i].count = 1;
 		}
+
 		cloud.is_bigendian = false;
 		cloud.point_step = 12;
 		cloud.row_step = cloud.point_step * cloud.width;
 		cloud.is_dense = true;
 		cloud.data.resize(xyz.size() * sizeof(float));
-		if (!xyz.empty()) std::memcpy(cloud.data.data(), xyz.data(), cloud.data.size());
+
+		if (!xyz.empty()){
+			std::memcpy(cloud.data.data(), xyz.data(), cloud.data.size());
+		}
+		
 		return cloud;
 	}
-
-	std::string target_frame_;
-	double z_height_, max_range_obstacles_, max_range_free_, h_stride_frac_, group_cell_size_;
-	double roll_unc_, roll_pad_factor_;
-	int obstacle_class_, free_class_, erode_radius_;
-	cv::Mat erode_kernel_;
-
-	sensor_msgs::CameraInfo::ConstPtr camera_info_;
-
-	bool rays_built_ = false;
-	Eigen::Matrix<double, 3, Eigen::Dynamic> d_cam_;
-	std::vector<int> grid_u_, grid_v_;
-
-	std::vector<int> proj_u_, proj_v_;
-	std::vector<float> proj_xyz_, proj_depth_;
-
-	tf2_ros::Buffer tf_buffer_;
-	tf2_ros::TransformListener tf_listener_;
-
-	ros::Subscriber info_sub_, seg_sub_;
-	ros::Publisher obstacle_cloud_pub_, free_cloud_pub_;
 };
 
 int main(int argc, char** argv) {

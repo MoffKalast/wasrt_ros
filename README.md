@@ -1,14 +1,19 @@
 # wasrt_ros
 
-A self-contained ROS One package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T)
-(ResNet-101) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT for the purpose of verifying and filtering unreliable laserscan points.
+A self-contained ROS One package that runs [WaSR-T](https://github.com/lojzezust/WaSR-T) and [eWaSR](https://github.com/tersekmatija/ewasr) maritime semantic segmentation on a live camera stream with either PyTorch or TensorRT for the purpose of verifying and filtering unreliable laserscan points.
 
-Tested at 320x96:
+WaSR-T (ResNet-101) Tested at 320x96:
 
 | GPU   | PyTorch | TensorRT |
 | --------- | ------: | -------: |
 | RTX 4060  |  75 fps |  165 fps |
 | Orin Nano |   5 fps |   11 fps |
+
+eWaSR (ResNet-34) Tested at 640x192:
+
+| GPU   | PyTorch | TensorRT |
+| --------- | ------: | -------: |
+| Orin Nano |   8 fps |   15 fps |
 
 Orin performance isn't great, but it just about matches the required 10 Hz for filtering every lidar message for common lidars. The upside is that it's almost completely reliable at filtering out reflections, direct sunlight, and other marine sources of lidar false detections, so these verified points can be treated with very high confidence.
 
@@ -49,8 +54,6 @@ The eWaSR equivalents, with the same four topic parameters above. Extra paramete
 | `~resize_input` | `true` | Resize mismatched frames to the model resolution instead of skipping them. |
 | `~width` / `~height` (torch only) | `640` / `192` | Model input resolution, both divisible by 32. The TensorRT node reads this from the engine instead. |
 | `~precision` (torch only) | `half` | One of `half`, `autocast`, `float`. |
-
-See the [eWaSR](#ewasr) section below for the export and engine build.
 
 #### `lidar_verifyer_node.py`
 
@@ -208,3 +211,5 @@ The gate sits in the camera preprocessor, so while disabled no cropped images ar
 ## Acknowledgements
 
 Model architecture and weights from [WaSR-T](https://github.com/lojzezust/WaSR-T) by Lojze Žust and Matej Kristan ("Temporal Context for Robust Maritime Obstacle Detection", IROS 2022).
+
+eWaSR model architecture from [eWaSR](https://github.com/tersekmatija/eWaSR) by Matija Teršek, Lojze Žust and Matej Kristan ("eWaSR — An Embedded-Compute-Ready Maritime Obstacle Detection Network", Sensors 2023).

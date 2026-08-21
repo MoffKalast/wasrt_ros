@@ -39,7 +39,7 @@ public:
 		info_sub_ = nh.subscribe(info_topic, 1, &LidarVerifier::infoCb, this);
 		scan_pub_ = nh.advertise<sensor_msgs::LaserScan>(out_topic, 1);
 
-		// the preview is deliberately NOT synchronized: verification must run even when no preview arrives, so we cache the latest.
+		// the preview is best effort
 		if (publish_preview_) {
 			preview_sub_ = nh.subscribe(preview_topic, 1, &LidarVerifier::previewCb, this, ros::TransportHints().tcpNoDelay());
 			image_pub_ = nh.advertise<sensor_msgs::CompressedImage>("/wasr/scan_preview/compressed", 1);
@@ -47,18 +47,46 @@ public:
 
 		seg_sub_.subscribe(nh, seg_topic, 1);
 		scan_sub_.subscribe(nh, scan_topic, 1);
+
 		sync_.reset(new message_filters::Synchronizer<SyncPolicy>(SyncPolicy(4), seg_sub_, scan_sub_));
-		// rospy's ApproximateTimeSynchronizer takes a hard slop; roscpp's policy has no direct slop, so we bound the pairing interval instead (closest equivalent for two topics).
 		sync_->setMaxIntervalDuration(ros::Duration(0.05));
 		sync_->registerCallback(boost::bind(&LidarVerifier::syncCb, this, boost::placeholders::_1, boost::placeholders::_2));
 	}
 
 private:
-	void previewCb(const sensor_msgs::CompressedImage::ConstPtr& msg) { latest_preview_ = msg; }
+
+	int point_radius_ = 1;
+	int obstacle_class_ = 0;
+	bool publish_preview_ = false;
+	bool static_tf_ = true;
+
+	bool have_info_ = false;
+	std::string info_frame_;
+	Eigen::Matrix<double, 3, 4> P_;
+
+	bool have_tf_ = false;
+	Eigen::Matrix4d tf_cached_;
+	tf2_ros::Buffer tf_buffer_;
+	tf2_ros::TransformListener tf_listener_;
+
+	sensor_msgs::CompressedImage::ConstPtr latest_preview_;
+
+	ros::Subscriber info_sub_, preview_sub_;
+	ros::Publisher scan_pub_, image_pub_;
+	message_filters::Subscriber<sensor_msgs::Image> seg_sub_;
+	message_filters::Subscriber<sensor_msgs::LaserScan> scan_sub_;
+	boost::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
+
+	void previewCb(const sensor_msgs::CompressedImage::ConstPtr& msg) {
+		latest_preview_ = msg;
+	}
 
 	void infoCb(const sensor_msgs::CameraInfo::ConstPtr& msg) {
 		info_frame_ = msg->header.frame_id;
-		for (int i = 0; i < 12; ++i) P_(i / 4, i % 4) = msg->P[i];
+
+		for (int i = 0; i < 12; ++i)
+			P_(i / 4, i % 4) = msg->P[i];
+
 		have_info_ = true;
 	}
 
@@ -75,10 +103,19 @@ private:
 	}
 
 	bool lookupTf(const sensor_msgs::LaserScan& scan, Eigen::Matrix4d& M) {
-		if (static_tf_ && have_tf_) { M = tf_cached_; return true; }
+		if (static_tf_ && have_tf_) {
+			M = tf_cached_;
+			return true;
+		}
+
 		geometry_msgs::TransformStamped t = tf_buffer_.lookupTransform(info_frame_, scan.header.frame_id, scan.header.stamp, ros::Duration(0.1));
 		M = toMatrix(t);
-		if (static_tf_) { tf_cached_ = M; have_tf_ = true; }
+
+		if (static_tf_) { 
+			tf_cached_ = M;
+			have_tf_ = true;
+		}
+
 		return true;
 	}
 
@@ -99,7 +136,9 @@ private:
 	}
 
 	void forwardPreview() {
-		if (publish_preview_ && latest_preview_) image_pub_.publish(latest_preview_);
+		if (publish_preview_ && latest_preview_){
+			image_pub_.publish(latest_preview_);
+		}
 	}
 
 	void syncCb(const sensor_msgs::Image::ConstPtr& seg_msg, const sensor_msgs::LaserScan::ConstPtr& scan) {
@@ -126,17 +165,17 @@ private:
 		idx.reserve(n);
 		for (int i = 0; i < n; ++i) {
 			float r = ranges[i];
-			if (std::isfinite(r) && r >= scan->range_min && r <= scan->range_max) idx.push_back(i);
+			if (std::isfinite(r) && r >= scan->range_min && r <= scan->range_max){
+				idx.push_back(i);
+			}
 		}
 
 		if (idx.empty()) {
-			// no valid returns: the verified scan is legitimately empty, not a failure
 			publishVerified(*scan, std::vector<float>(n, nan));
 			forwardPreview();
 			return;
 		}
 
-		// view into seg_msg, which outlives this callback
 		cv::Mat labels;
 		try {
 			labels = wasrt::mono8FromImageMsg(*seg_msg);
@@ -168,64 +207,59 @@ private:
 			double depth = uvw(2, k);
 			bool front = depth > 1e-6;
 			double safe = front ? depth : 1.0;
+
 			int u = static_cast<int>(std::nearbyint(uvw(0, k) / safe));
 			int v = static_cast<int>(std::nearbyint(uvw(1, k) / safe));
+
 			bool vis = front && u >= 0 && u < w && v >= 0 && v < h;
 			bool ok = vis && labels.at<uchar>(v, u) == obstacle_class_;
+
 			uu[k] = u;
 			vv[k] = v;
 			visible[k] = vis;
 			verified[k] = ok;
+
 			// a point is kept only if the camera sees it AND it lands on an obstacle pixel; everything else can't be verified
-			if (!ok) new_ranges[idx[k]] = nan;
+			if (!ok){
+				new_ranges[idx[k]] = nan;
+			}
 		}
 
 		publishVerified(*scan, new_ranges);
 
-		if (publish_preview_ && latest_preview_) publishPreviewImage(latest_preview_, uu, vv, visible, verified);
+		if (publish_preview_ && latest_preview_){
+			publishPreviewImage(latest_preview_, uu, vv, visible, verified);
+		}
 	}
 
 	void publishPreviewImage(const sensor_msgs::CompressedImage::ConstPtr& preview_msg, const std::vector<int>& uu, const std::vector<int>& vv, const std::vector<char>& visible, const std::vector<char>& verified) {
 		try {
 			cv::Mat img = cv::imdecode(cv::Mat(preview_msg->data), cv::IMREAD_COLOR);
-			if (img.empty()) return;
+
+			if (img.empty())
+				return;
+
 			for (size_t k = 0; k < uu.size(); ++k) {
-				if (!visible[k]) continue;
+				if (!visible[k])
+					continue;
+
 				cv::circle(img, cv::Point(uu[k], vv[k]), point_radius_, verified[k] ? cv::Scalar(0, 255, 0) : cv::Scalar(0, 0, 255), -1);
 			}
+
 			std::vector<uchar> buf;
-			if (!cv::imencode(".jpg", img, buf, {cv::IMWRITE_JPEG_QUALITY, 95})) return;
+			if (!cv::imencode(".jpg", img, buf, {cv::IMWRITE_JPEG_QUALITY, 80}))
+				return;
+
 			sensor_msgs::CompressedImage out;
 			out.header = preview_msg->header;
 			out.format = "jpeg";
 			out.data = std::move(buf);
 			image_pub_.publish(out);
+
 		} catch (const std::exception& e) {
 			ROS_WARN_THROTTLE(2.0, "preview rendering failed: %s", e.what());
 		}
 	}
-
-	int point_radius_ = 1;
-	int obstacle_class_ = 0;
-	bool publish_preview_ = false;
-	bool static_tf_ = true;
-
-	bool have_info_ = false;
-	std::string info_frame_;
-	Eigen::Matrix<double, 3, 4> P_;
-
-	bool have_tf_ = false;
-	Eigen::Matrix4d tf_cached_;
-	tf2_ros::Buffer tf_buffer_;
-	tf2_ros::TransformListener tf_listener_;
-
-	sensor_msgs::CompressedImage::ConstPtr latest_preview_;
-
-	ros::Subscriber info_sub_, preview_sub_;
-	ros::Publisher scan_pub_, image_pub_;
-	message_filters::Subscriber<sensor_msgs::Image> seg_sub_;
-	message_filters::Subscriber<sensor_msgs::LaserScan> scan_sub_;
-	boost::shared_ptr<message_filters::Synchronizer<SyncPolicy>> sync_;
 };
 
 int main(int argc, char** argv) {
