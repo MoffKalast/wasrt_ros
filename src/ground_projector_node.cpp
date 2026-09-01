@@ -29,14 +29,15 @@ public:
 		pnh.param("obstacle_class", obstacle_class_, 0);
 		pnh.param("free_class", free_class_, 1);
 		
-
 		double roll_unc_deg;
 		pnh.param("roll_unc_deg", roll_unc_deg, 8.0);
 		roll_unc_ = roll_unc_deg * M_PI / 180.0;
-		pnh.param("roll_pad_factor", roll_pad_factor_, 6.0);
 
+		pnh.param("roll_pad_factor", roll_pad_factor_, 6.0);
 		pnh.param("erode_radius", erode_radius_, 2);
-		if (erode_radius_ > 0) erode_kernel_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * erode_radius_ + 1, 2 * erode_radius_ + 1));
+
+		if (erode_radius_ > 0)
+			erode_kernel_ = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(2 * erode_radius_ + 1, 2 * erode_radius_ + 1));
 
 		std::string info_topic, seg_topic, obstacle_cloud_topic, free_cloud_topic;
 		pnh.param<std::string>("camera_info_topic", info_topic, "/camera/image_cropped/camera_info");
@@ -258,8 +259,8 @@ private:
 			}
 		}
 
-		obstacle_cloud_pub_.publish(makeXyzCloud(msg->header.stamp, groupGround(obstacle_xyz)));
 		free_cloud_pub_.publish(makeXyzCloud(msg->header.stamp, groupGround(free_xyz)));
+		obstacle_cloud_pub_.publish(makeXyzCloud(msg->header.stamp, groupGround(obstacle_xyz)));
 	}
 
 	sensor_msgs::PointCloud2 makeXyzCloud(const ros::Time& stamp, const std::vector<float>& xyz) {

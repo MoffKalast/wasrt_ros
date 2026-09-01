@@ -50,8 +50,10 @@ public:
 			subscribeImage();
 		}
 
-		// power gate: no cropped images -> inference nodes idle. Enabled by default so models warm up before the first command.
+		enable_pub_ = nh.advertise<std_msgs::Bool>(enable_topic, 1, true);
+		publishEnabled();
 		enable_sub_ = nh.subscribe(enable_topic, 1, &DnnPreprocessNode::enableCb, this);
+
 		info_sub_ = nh.subscribe(base_topic + "/camera_info", 1, &DnnPreprocessNode::infoCb, this);
 
 		ROS_INFO("preprocessing %s (%s) -> %s [%s]", camera_topic.c_str(), compressed_input_ ? "CompressedImage" : "Image", output_topic.c_str(), enabled_ ? "enabled" : "disabled");
@@ -69,7 +71,7 @@ private:
 	ros::NodeHandle nh_;
 	std::string camera_topic_;
 
-	ros::Publisher image_pub_, info_pub_, preview_pub_;
+	ros::Publisher image_pub_, info_pub_, preview_pub_, enable_pub_;
 	ros::Subscriber image_sub_, info_sub_, enable_sub_;
 
 	void subscribeImage() {
@@ -80,12 +82,19 @@ private:
 		}
 	}
 
+	void publishEnabled() {
+		std_msgs::Bool msg;
+		msg.data = enabled_;
+		enable_pub_.publish(msg);
+	}
+
 	void enableCb(const std_msgs::Bool::ConstPtr& msg) {
 		if (msg->data == enabled_){
 			return;
 		}
 
 		enabled_ = msg->data;
+		publishEnabled();
 		ROS_INFO("segmentation pipeline %s", enabled_ ? "enabled" : "disabled");
 
 		if (enabled_){
